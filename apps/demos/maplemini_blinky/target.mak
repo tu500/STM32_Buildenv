@@ -32,7 +32,7 @@ INCLUDES = $(SELF_DIR)/inc \
 # Middlewares to add
 # source files are built with this target (specific for this target, so local header files are consideres)
 # include paths are added automatically
-MIDDLEWARES = cmsis stm32f1_device_103xb stm32f1_hal maple_mini_bsp
+MIDDLEWARES = cmsis stm32f1_device_103xb stm32f1_hal
 
 # Additional local static libs to link against
 LIBS = $(BINARY-libdummy)

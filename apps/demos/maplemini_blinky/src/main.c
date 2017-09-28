@@ -1,8 +1,12 @@
 #include "stm32f1xx.h"
-#include "maple_mini.h"
 
+static void TIM4_Config(void);
 static void SystemClock_Config(void);
 static void Error_Handler(void);
+
+/* Variables used for timer */
+uint16_t PrescalerValue = 0;
+TIM_HandleTypeDef htim4;
 
 /**
   * @brief  Main program
@@ -14,15 +18,91 @@ int main(int argc, char const *argv[])
 	HAL_Init();
 	SystemClock_Config();
 
-  BSP_LED_Init(LED_BLUE);
+  /* Enable the GPIO_LED Clock */
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+
+  /* Configure the GPIO_LED pin */
+  HAL_GPIO_Init(GPIOC, &(GPIO_InitTypeDef){
+			.Pin    = GPIO_PIN_13,
+			.Mode   = GPIO_MODE_OUTPUT_PP,
+			.Pull   = GPIO_NOPULL,
+			.Speed  = GPIO_SPEED_HIGH,
+		});
+
+  /* Reset PIN to switch off the LED */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+
+	__HAL_RCC_TIM4_CLK_ENABLE();
+
+	HAL_NVIC_SetPriority((TIM4_IRQn), 0x00, 0);
+	HAL_NVIC_EnableIRQ((TIM4_IRQn));
+
+	TIM4_Config();
+
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 	
 	while(1)
   {
-    BSP_LED_Toggle(LED_BLUE);
-    HAL_Delay(500);
+    /* HAL_Delay(1000); */
   }
 
 	return 0;
+}
+
+void TIM4_IRQHandler(void){
+  /* TIM Update event */
+  if(__HAL_TIM_GET_FLAG(&htim4, TIM_FLAG_UPDATE) != RESET)
+  {
+    if(__HAL_TIM_GET_IT_SOURCE(&htim4, TIM_IT_UPDATE) !=RESET)
+    {
+      __HAL_TIM_CLEAR_IT(&htim4, TIM_IT_UPDATE);
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+    }
+  }
+}
+
+static void TIM4_Config(void)
+{
+  /* -----------------------------------------------------------------------
+  TIM4 Configuration: Output Compare Timing Mode:
+  
+  In this example TIM4 input clock (TIM4CLK) is set to 2 * APB1 clock (PCLK1), 
+  since APB1 prescaler is different from 1 (APB1 Prescaler = 4, see system_stm32f4xx.c file).
+  TIM4CLK = 2 * PCLK1  
+  PCLK1 = HCLK / 4 
+  => TIM4CLK = 2*(HCLK / 4) = HCLK/2 = SystemCoreClock/2
+  
+  To get TIM4 counter clock at 2 KHz, the prescaler is computed as follows:
+  Prescaler = (TIM4CLK / TIM4 counter clock) - 1
+  Prescaler = (84 MHz/(2 * 2 KHz)) - 1 = 41999
+  
+  To get TIM4 output clock at 1 Hz, the period (ARR)) is computed as follows:
+  ARR = (TIM4 counter clock / TIM4 output clock) - 1
+  = 1999
+  ----------------------------------------------------------------------- */ 
+  
+  /* Compute the prescaler value */
+  PrescalerValue = (uint16_t) ((SystemCoreClock /2) / 2000) - 1;
+  
+  /* Time base configuration */
+  htim4.Instance               = TIM4;
+  htim4.Init.Period            = 1999;
+  htim4.Init.Prescaler         = PrescalerValue;
+  htim4.Init.ClockDivision     = 0;
+  htim4.Init.CounterMode       = TIM_COUNTERMODE_UP;
+	htim4.Init.RepetitionCounter = 0;
+	
+  if(HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    /* Initialization Error */
+    Error_Handler();
+  }
+	
+  if(HAL_TIM_Base_Start_IT(&htim4) != HAL_OK)
+  {
+    /* Initialization Error */
+    Error_Handler();
+  }
 }
 
 /**

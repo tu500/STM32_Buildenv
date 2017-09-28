@@ -58,10 +58,10 @@ typedef enum
   */
 #define LEDn                             1
 
-#define LED1_PIN                         GPIO_PIN_1           /* PB.01 */
-#define LED1_GPIO_PORT                   GPIOB
-#define LED1_GPIO_CLK_ENABLE()           __HAL_RCC_GPIOB_CLK_ENABLE()
-#define LED1_GPIO_CLK_DISABLE()          __HAL_RCC_GPIOB_CLK_DISABLE()
+#define LED1_PIN                         GPIO_PIN_13           /* PB.01 */
+#define LED1_GPIO_PORT                   GPIOC
+#define LED1_GPIO_CLK_ENABLE()           __HAL_RCC_GPIOC_CLK_ENABLE()
+#define LED1_GPIO_CLK_DISABLE()          __HAL_RCC_GPIOC_CLK_DISABLE()
 
 #define LEDx_GPIO_CLK_ENABLE(__INDEX__)   do {LED1_GPIO_CLK_ENABLE();} while(0)
 

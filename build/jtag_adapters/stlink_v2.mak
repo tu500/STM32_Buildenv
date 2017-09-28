@@ -16,4 +16,7 @@ upload-$(TARGET): $(OBJDIR-$(TARGET))/$(TARGET).bin
 	$(call cmd_msg,STLINK,$<)
 	$(Q)st-flash write $< 0x8000000
 
-.PHONY: upload-$(TARGET) debug-$(TARGET)
+openocd-debug-$(TARGET): $(OBJDIR-$(TARGET))/$(TARGET).elf
+	$(GDB) -ex "tar ext :3333" $<
+
+.PHONY: upload-$(TARGET) debug-$(TARGET) run-openocd-stm32f1x
