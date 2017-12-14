@@ -1,12 +1,24 @@
-#include "stm32f1xx.h"
+#include <stdbool.h>
+#include <stdio.h>
 
-static void TIM4_Config(void);
+#include "stm32f1xx.h"
+#include "uip.h"
+
+#include "hardware.h"
+#include "enc28j60.h"
+
+#include "mqtt.h"
+#include "autoc4.h"
+
 static void SystemClock_Config(void);
 static void Error_Handler(void);
 
-/* Variables used for timer */
-uint16_t PrescalerValue = 0;
-TIM_HandleTypeDef htim4;
+ENC_HandleTypeDef henc;
+uint8_t MacAddress[6] = { 0xac, 0xde, 0x48, 0x23, 0x23, 0x10 };
+
+void do_nothing(void){}
+void uip_setup(void);
+void uip_loop(void);
 
 /**
   * @brief  Main program
@@ -32,81 +44,58 @@ int main(int argc, char const *argv[])
   /* Reset PIN to switch off the LED */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 
-  /* Enable timer clock */
-  __HAL_RCC_TIM4_CLK_ENABLE();
+  enc28j60_init_spi();
+  uip_setup();
 
-  /* Configure timer interrupt */
-  HAL_NVIC_SetPriority((TIM4_IRQn), 0x00, 0);
-  HAL_NVIC_EnableIRQ((TIM4_IRQn));
+  henc.Init.InterruptEnableBits = EIE_RXERIE | EIE_TXERIE | EIE_TXIE | EIE_LINKIE | EIE_PKTIE | EIE_INTIE;
+  henc.Init.DuplexMode = ETH_MODE_HALFDUPLEX;
+  henc.Init.MACAddr = &MacAddress[0];
+  henc.Init.ChecksumMode = ETH_CHECKSUM_BY_HARDWARE;
+  henc.RxFrameInfos.buffer = &uip_buf[0];
 
-  /* Configure timer */
-  TIM4_Config();
+  printf("Setup\r\n");
 
+  bool b = ENC_Start(&henc);
+  ENC_SetMacAddr(&henc);
+
+  printf("ENC Started\r\n");
+
+  if (b)
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+
+  autoc4_init();
+
+  char const * autosub[] = {
+    "topic1",
+    NULL
+  };
+  mqtt_connection_config_t mqtt_config;
+  mqtt_config.client_id = "clientid";
+  mqtt_config.user = NULL;
+  mqtt_config.pass = NULL;
+  mqtt_config.will_topic = NULL;
+  uip_ipaddr(mqtt_config.target_ip, 192,168,0,5);
+  /* uip_ipaddr(mqtt_config.target_ip, 172,23,23,110); */
+  mqtt_config.auto_subscribe_topics = autosub;
+
+  /* mqtt_set_connection_config(&mqtt_config); */
 
   while(1)
   {
+    /* HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_11)); */
+
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_11) == GPIO_PIN_RESET)
+    {
+      ENC_IRQCheckInterruptFlags(&henc);
+    }
+
+    HAL_Delay(10);
+    mqtt_periodic();
+    autoc4_periodic();
+    uip_loop();
   }
 
   return 0;
-}
-
-void TIM4_IRQHandler(void)
-{
-  /* TIM Update event */
-  if(__HAL_TIM_GET_FLAG(&htim4, TIM_FLAG_UPDATE) != RESET)
-  {
-    if(__HAL_TIM_GET_IT_SOURCE(&htim4, TIM_IT_UPDATE) !=RESET)
-    {
-      __HAL_TIM_CLEAR_IT(&htim4, TIM_IT_UPDATE);
-
-      /* Toggle LED pin */
-      HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-    }
-  }
-}
-
-static void TIM4_Config(void)
-{
-  /* -----------------------------------------------------------------------
-  TIM4 Configuration: Output Compare Timing Mode:
-
-  In this example TIM4 input clock (TIM4CLK) is set to 2 * APB1 clock (PCLK1),
-  since APB1 prescaler is different from 1 (APB1 Prescaler = 4, see system_stm32f4xx.c file).
-  TIM4CLK = 2 * PCLK1
-  PCLK1 = HCLK / 4
-  => TIM4CLK = 2*(HCLK / 4) = HCLK/2 = SystemCoreClock/2
-
-  To get TIM4 counter clock at 2 KHz, the prescaler is computed as follows:
-  Prescaler = (TIM4CLK / TIM4 counter clock) - 1
-  Prescaler = (84 MHz/(2 * 2 KHz)) - 1 = 41999
-
-  To get TIM4 output clock at 1 Hz, the period (ARR)) is computed as follows:
-  ARR = (TIM4 counter clock / TIM4 output clock) - 1
-  = 1999
-  ----------------------------------------------------------------------- */
-
-  /* Compute the prescaler value */
-  PrescalerValue = (uint16_t) ((SystemCoreClock /2) / 2000) - 1;
-
-  /* Time base configuration */
-  htim4.Instance               = TIM4;
-  htim4.Init.Period            = 1999;
-  htim4.Init.Prescaler         = PrescalerValue;
-  htim4.Init.ClockDivision     = 0;
-  htim4.Init.CounterMode       = TIM_COUNTERMODE_UP;
-  htim4.Init.RepetitionCounter = 0;
-
-  if(HAL_TIM_Base_Init(&htim4) != HAL_OK)
-  {
-    /* Initialization Error */
-    Error_Handler();
-  }
-
-  if(HAL_TIM_Base_Start_IT(&htim4) != HAL_OK)
-  {
-    /* Initialization Error */
-    Error_Handler();
-  }
 }
 
 /**
