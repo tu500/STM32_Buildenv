@@ -12,9 +12,6 @@
 //#define UIP_CONF_LOGGING
 //#define UIP_CONF_STATISTICS
 
-void do_nothing(void);
-
-//#define UIP_APPCALL do_nothing
 #define UIP_APPCALL   if (uip_conn->appstate.callback) uip_conn->appstate.callback
 typedef struct
 {

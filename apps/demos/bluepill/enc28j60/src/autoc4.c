@@ -26,7 +26,9 @@
 #include "mqtt.h"
 #include "autoc4.h"
 
-#define AUTOC4_CONFIG_FILE "plenarsaal.c"
+#include "ws2812b.h"
+
+#define AUTOC4_CONFIG_FILE "bluegate.c"
 #include AUTOC4_CONFIG_FILE
 
 /* #include "services/dmx-storage/dmx_storage.h" */
@@ -204,6 +206,20 @@ static void autoc4_publish_callback(char const *topic,
     if (strncmp(topic, AUTOC4_LOGICER_HEARTBEAT_TOPIC, topic_length) == 0)
     {
       logicer_state = (bool) ((uint8_t*)payload)[0];
+      return;
+    }
+
+    // Save logicer heartbeat state
+    if (strncmp(topic, "rgb/bell", topic_length) == 0)
+    {
+      if (payload_length < 4*3)
+        return;
+
+      const uint8_t *p = payload;
+
+      for (size_t i=0; i<4; i++)
+        ws2812b_fill_dma_buffer(i, p[i*3 + 0], p[i*3 + 1], p[i*3 + 2]);
+
       return;
     }
 

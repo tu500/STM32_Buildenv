@@ -79,10 +79,15 @@ Errata 18 is implemented in lwip stack
 */
 
 #include <stdio.h>
+#include "locking.h"
+#include "hardware.h"
+#include "uip_interface.h"
 
 /* Includes ------------------------------------------------------------------*/
 #include "enc28j60.h"
 __inline static void up_udelay(uint32_t us);
+
+static uint8_t ENC_GetPkcnt(ENC_HandleTypeDef *handle);
 
 /** @addtogroup BSP
   * @{
@@ -741,6 +746,11 @@ bool ENC_Start(ENC_HandleTypeDef *handle)
     /* Calibrate time constant */
     calibrate();
 
+    handle->txState.stage = ENC_TX_STAGE_FREE;
+    handle->rxState.stage = ENC_RX_STAGE_IDLE;
+    handle->txState.queue_data = NULL;
+    handle->rxState.rx_timed_error_count = 0;
+
     /* System reset */
 	enc_reset(handle);
 
@@ -787,7 +797,6 @@ bool ENC_Start(ENC_HandleTypeDef *handle)
 
     /* Set transmit buffer start. */
 
-    handle->transmitLength = 0;
     enc_wrbreg(handle, ENC_ETXSTL, PKTMEM_TX_START & 0xff);
     enc_wrbreg(handle, ENC_ETXSTH, PKTMEM_TX_START >> 8);
 
@@ -983,12 +992,12 @@ void ENC_WriteBuffer(void *buffer, uint16_t buflen)
    *  overhead.
    */
 
-  ENC_SPI_SendBuf(buffer, NULL, buflen);
+  ENC_SPI_SendLargeBuf(buffer, NULL, buflen);
 
   /* De-select ENC28J60 chip
    *
    * "The WBM command is terminated by bringing up the CS pin. ..."
-   * done in ENC_SPI_SendBuf callback
+   * done in ENC_SPI_SendLargeBuf callback
    */
 
 }
@@ -1026,6 +1035,23 @@ static void enc_rdbuffer(void *buffer, int16_t buflen)
   ENC_SPI_SendBuf(NULL, buffer, buflen);
 
   /* De-select ENC28J60 chip: done in ENC_SPI_SendBuf callback */
+}
+
+static void enc_rdbuffer_async(void *buffer, int16_t buflen)
+{
+  /* Select ENC28J60 chip */
+
+  ENC_SPI_Select(true);
+
+  /* Send the read buffer memory command (ignoring the response) */
+
+  ENC_SPI_SendWithoutSelection(ENC_RBM);
+
+  /* Then read the buffer data */
+
+  ENC_SPI_SendLargeBuf(NULL, buffer, buflen);
+
+  /* De-select ENC28J60 chip: done in ENC_SPI_SendLargeBuf callback */
 }
 
 /****************************************************************************
@@ -1141,65 +1167,132 @@ int8_t ENC_RestoreTXBuffer(ENC_HandleTypeDef *handle, uint16_t len)
  *
  ****************************************************************************/
 
-#ifdef USE_PROTOTHREADS
-PT_THREAD(ENC_Transmit(struct pt *pt, ENC_HandleTypeDef *handle))
-#else
+#define ENC_TX_TIMEOUT 1000
 void ENC_Transmit(ENC_HandleTypeDef *handle)
-#endif
 {
-    PT_BEGIN(pt);
+  bool starting = false;
 
-    if (handle->transmitLength != 0) {
-        /* A frame is ready for transmission */
-        /* Set TXRTS to send the packet in the transmit buffer */
+  if (handle->txState.stage == ENC_TX_STAGE_READY_TO_TRANSMIT)
+  {
+    if (!lock_acquire(&spi_lock))
+      return;
 
-        //enc_bfsgreg(ENC_ECON1, ECON1_TXRTS);
-        /* Implement erratas 12, 13 and 15 */
-        /* Reset transmit logic */
-        handle->retries = 16;
-        do {
-            enc_bfsgreg(ENC_ECON1, ECON1_TXRST);
-            enc_bfcgreg(ENC_ECON1, ECON1_TXRST);
-            enc_bfcgreg(ENC_EIR, EIR_TXERIF | EIR_TXIF);
+    handle->txState.stage = ENC_TX_STAGE_TRANSMITTING;
+    handle->txState.retries = 16;
+    handle->interrupt_pending_TXERIF = false;
+    handle->interrupt_pending_TXIF = false;
 
-            /* Start transmission */
-            enc_bfsgreg(ENC_ECON1, ECON1_TXRTS);
+    starting = true;
+  }
 
-#ifdef USE_PROTOTHREADS
-            handle->startTime = HAL_GetTick();
-            handle->duration = 20; /* Timeout after 20 ms */
-            PT_WAIT_UNTIL(pt, (((enc_rdgreg(ENC_EIR) & (EIR_TXIF | EIR_TXERIF)) != 0) ||
-                          (HAL_GetTick() - handle->startTime > handle->duration)));
-#else
-            /* Wait for end of transmission */
-            enc_waitwhilegreg(ENC_EIR, EIR_TXIF | EIR_TXERIF, 0);
-#endif
+  if (handle->txState.stage == ENC_TX_STAGE_TRANSMITTING)
+  {
+    if (!handle->interrupt_pending_TXERIF
+        && !handle->interrupt_pending_TXIF
+        && !starting)
+    {
+      bool is_timeout = (HAL_GetTick() - handle->txState.current_transmit_starttime) >= ENC_TX_TIMEOUT;
 
-            /* Stop transmission */
-            enc_bfcgreg(ENC_ECON1, ECON1_TXRTS);
+      if (!is_timeout)
+        return;
 
-            {
-                uint16_t addtTsv4;
-                uint8_t tsv4, regval;
+      else
+      {
+        if (!lock_acquire(&spi_lock))
+          return;
 
-                /* read tsv */
-                addtTsv4 = PKTMEM_TX_START + handle->transmitLength + 4;
+        // TODO: don't cancel completely, just use up one retry
 
-                enc_wrbreg(handle, ENC_ERDPTL, addtTsv4 & 0xff);
-                enc_wrbreg(handle, ENC_ERDPTH, addtTsv4 >> 8);
+        /* Stop transmission */
+        enc_bfcgreg(ENC_ECON1, ECON1_TXRTS);
+        lock_release(&spi_lock);
 
-                enc_rdbuffer(&tsv4, 1);
-                regval = enc_rdgreg(ENC_EIR);
-                if (!(regval & EIR_TXERIF) || !(tsv4 & TSV_LATECOL)) {
-                    break;
-                }
-            }
-            handle->retries--;
-        } while (handle->retries > 0);
-        /* Transmission finished (but can be unsuccessful) */
-        handle->transmitLength = 0;
+        handle->txState.stage = ENC_TX_STAGE_FREE;
+        printf("TX timeout\r\n");
+
+        // callback?
+        return;
+      }
     }
-    PT_END(pt);
+
+    if (!(starting || lock_acquire(&spi_lock)))
+      return;
+
+    handle->interrupt_pending_TXERIF = false;
+    handle->interrupt_pending_TXIF = false;
+
+    if (!starting)
+    {
+      // finish last transmission
+
+      /* Stop transmission */
+      enc_bfcgreg(ENC_ECON1, ECON1_TXRTS);
+
+      {
+        uint16_t addtTsv4;
+        uint8_t tsv4, regval;
+
+        /* read tsv */
+        addtTsv4 = PKTMEM_TX_START + handle->txState.current_length + 4;
+
+        enc_wrbreg(handle, ENC_ERDPTL, addtTsv4 & 0xff);
+        enc_wrbreg(handle, ENC_ERDPTH, addtTsv4 >> 8);
+
+        enc_rdbuffer(&tsv4, 1);
+        regval = enc_rdgreg(ENC_EIR);
+        if (!(regval & EIR_TXERIF) || !(tsv4 & TSV_LATECOL))
+        {
+          // successful transimission
+          handle->txState.stage = ENC_TX_STAGE_FREE;
+          lock_release(&spi_lock);
+          printf("TX successful\r\n");
+          // callback?
+          return;
+        }
+      }
+
+      handle->txState.retries--;
+      if (handle->txState.retries == 0)
+      {
+        // unsuccessful transimission
+        handle->txState.stage = ENC_TX_STAGE_FREE;
+        lock_release(&spi_lock);
+        printf("TX unsuccessful\r\n");
+        // callback?
+        return;
+      }
+    }
+
+    /* A frame is ready for transmission */
+    /* Set TXRTS to send the packet in the transmit buffer */
+
+    //enc_bfsgreg(ENC_ECON1, ECON1_TXRTS);
+    /* Implement erratas 12, 13 and 15 */
+    /* Reset transmit logic */
+
+    enc_bfsgreg(ENC_ECON1, ECON1_TXRST);
+    enc_bfcgreg(ENC_ECON1, ECON1_TXRST);
+    enc_bfcgreg(ENC_EIR, EIR_TXERIF | EIR_TXIF);
+
+    /* Start transmission */
+    printf("Starting transmission\r\n");
+    enc_bfsgreg(ENC_ECON1, ECON1_TXRTS);
+    handle->txState.current_transmit_starttime = HAL_GetTick();
+    lock_release(&spi_lock);
+
+    // Now wait for the interrupt flag from the ENC chip
+
+//#ifdef USE_PROTOTHREADS
+//    handle->startTime = HAL_GetTick();
+//    handle->duration = 20; /* Timeout after 20 ms */
+//    PT_WAIT_UNTIL(pt, (((enc_rdgreg(ENC_EIR) & (EIR_TXIF | EIR_TXERIF)) != 0) ||
+//          (HAL_GetTick() - handle->startTime > handle->duration)));
+//#else
+//    /* Wait for end of transmission */
+//    enc_waitwhilegreg(ENC_EIR, EIR_TXIF | EIR_TXERIF, 0);
+//#endif
+
+  }
 }
 
 /****************************************************************************
@@ -1215,23 +1308,19 @@ void ENC_Transmit(ENC_HandleTypeDef *handle)
  *   true if new packet is available; false otherwise
  *
  * Assumptions:
+ *   there is a queued packet (PKTCNT > 0)
+ *   spi lock acquired
  *
  ****************************************************************************/
 
-bool ENC_GetReceivedFrame(ENC_HandleTypeDef *handle)
+static void ENC_ReadPacketDataCallback(void);
+// implicitly gets spi and uip_buf locks
+void ENC_GetReceivedFrame(ENC_HandleTypeDef *handle)
 {
-    uint8_t  rsv[6];
-    uint16_t pktlen;
-    uint16_t rxstat;
+    /* if (ENC_GetPkcnt() == 0) */
+    /*   return false; */
 
-    uint8_t pktcnt;
-
-    bool result = true;
-
-    pktcnt = enc_rdbreg(handle, ENC_EPKTCNT);
-    if (pktcnt == 0) {
-        return false;
-    };
+    handle->rxState.stage = ENC_RX_STAGE_READING_STATUS_VEC;
 
     /* Set the read pointer to the start of the received packet (ERDPT) */
 
@@ -1243,73 +1332,8 @@ bool ENC_GetReceivedFrame(ENC_HandleTypeDef *handle)
     * and wrap to the beginning of the read buffer as necessary)
     */
 
-    enc_rdbuffer(rsv, 6);
-
-    /* Decode the new next packet pointer, and the RSV.  The
-    * RSV is encoded as:
-    *
-    *  Bits 0-15:  Indicates length of the received frame. This includes the
-    *              destination address, source address, type/length, data,
-    *              padding and CRC fields. This field is stored in little-
-    *              endian format.
-    *  Bits 16-31: Bit encoded RX status.
-    */
-
-    handle->nextpkt = (uint16_t)rsv[1] << 8 | (uint16_t)rsv[0];
-    pktlen        = (uint16_t)rsv[3] << 8 | (uint16_t)rsv[2];
-    rxstat        = (uint16_t)rsv[5] << 8 | (uint16_t)rsv[4];
-
-  /* Check if the packet was received OK */
-
-    if ((rxstat & RXSTAT_OK) == 0) {
-#ifdef CONFIG_ENC28J60_STATS
-        priv->stats.rxnotok++;
-#endif
-        result = false;
-    } else { /* Check for a usable packet length (4 added for the CRC) */
-        if (pktlen > (CONFIG_NET_ETH_MTU + 4) || pktlen <= (ETH_HDRLEN + 4)) {
-    #ifdef CONFIG_ENC28J60_STATS
-            priv->stats.rxpktlen++;
-    #endif
-            result = false;
-        } else { /* Otherwise, read and process the packet */
-            /* Save the packet length (without the 4 byte CRC) in handle->RxFrameInfos.length*/
-
-            handle->RxFrameInfos.length = pktlen - 4;
-
-            /* Copy the data data from the receive buffer to priv->dev.d_buf.
-            * ERDPT should be correctly positioned from the last call to to
-            * end_rdbuffer (above).
-            */
-
-            enc_rdbuffer(handle->RxFrameInfos.buffer, handle->RxFrameInfos.length);
-
-        }
-    }
-
-    /* Move the RX read pointer to the start of the next received packet.
-    * This frees the memory we just read.
-    */
-
-    /* Errata 14 (on se sert de rxstat comme variable temporaire */
-    rxstat = handle->nextpkt;
-    if (rxstat == PKTMEM_RX_START) {
-        rxstat = PKTMEM_RX_END;
-    } else {
-        rxstat--;
-    }
-    enc_wrbreg(handle, ENC_ERXRDPTL, rxstat && 0xff);
-    enc_wrbreg(handle, ENC_ERXRDPTH, rxstat >> 8);
-/*
-    enc_wrbreg(handle, ENC_ERXRDPTL, (handle->nextpkt));
-    enc_wrbreg(handle, ENC_ERXRDPTH, (handle->nextpkt) >> 8);
-*/
-
-    /* Decrement the packet counter indicate we are done with this packet */
-
-    enc_bfsgreg(ENC_ECON2, ECON2_PKTDEC);
-
-    return result;
+    spi_largebuf_callback = ENC_ReadPacketDataCallback;
+    enc_rdbuffer_async(handle->rxState.buffer, 6); // use uip_buf as temporary buffer
 }
 
 /****************************************************************************
@@ -1425,6 +1449,9 @@ void ENC_EnableInterrupts(uint8_t bits)
 // May be called at any time, provided the SPI hardware is free
 void ENC_IRQCheckInterruptFlags(ENC_HandleTypeDef *handle)
 {
+  if (!lock_acquire(&spi_lock))
+    return;
+
   uint8_t eir;
 
   /* Read EIR for interrupt flags */
@@ -1453,6 +1480,8 @@ void ENC_IRQCheckInterruptFlags(ENC_HandleTypeDef *handle)
   if (eir & EIR_LINKIF)
     enc_rdphy(handle, ENC_PHIR); /* Clear the LINKIF interrupt */
 
+  lock_release(&spi_lock);
+
   ENC_HandlePendingEvents(handle);
 }
 
@@ -1466,8 +1495,11 @@ void ENC_HandlePendingLINKIF(ENC_HandleTypeDef *handle)
 {
   if (handle->interrupt_pending_LINKIF)
   {
+    if (!lock_acquire(&spi_lock))
+      return;
+
     // clear pending flag
-    // doing this now removes race condition, should
+    // doing this now eliminates race conditions, should
     // ENC_IRQCheckInterruptFlags ever be called asynchronously as this
     // handler will simply be called a second time
     handle->interrupt_pending_LINKIF = false;
@@ -1478,33 +1510,213 @@ void ENC_HandlePendingLINKIF(ENC_HandleTypeDef *handle)
       printf("Link up\r\n");
     else
       printf("Link down\r\n");
+
+    lock_release(&spi_lock);
   }
 }
 
-void uip_handle_new_packet(ENC_HandleTypeDef *handle);
 void ENC_HandlePendingPKTIF(ENC_HandleTypeDef *handle)
 {
   if (handle->interrupt_pending_PKTIF)
   {
+    if (!lock_is_free(&uip_buf_lock))
+      return;
+
+    if (!lock_acquire(&spi_lock))
+      return;
+
+    // reset this flag prematurely
+    // reading pktcnt will tell us whether there are packets left
     handle->interrupt_pending_PKTIF = false;
 
-    ENC_GetPkcnt(handle);
+    uint8_t pktCnt = ENC_GetPkcnt(handle);
 
-    if (handle->pktCnt != 0)
+    if (pktCnt == 0)
     {
+      lock_release(&spi_lock);
+      return;
+    }
+    else
+    {
+      // we will handle a packet and don't know whether there is yet another
+      // waiting, but in that case we will just read pktcnt in the next
+      // iteration of this handler
       handle->interrupt_pending_PKTIF = true;
 
-      /* printf("Handle packet\r\n"); */
-      if (ENC_GetReceivedFrame(handle))
+      if (!lock_acquire(&uip_buf_lock))
       {
-        // new packet, error-free
-        uip_handle_new_packet(handle);
-        //for (int i=0; i<handle->RxFrameInfos.length; i++)
-        //  printf("%02x", handle->RxFrameInfos.buffer[i]);
-        //printf("\r\n");
+        lock_release(&spi_lock);
+        return;
       }
+
+      // async
+      ENC_GetReceivedFrame(handle); // pass spi_lock and uip_buf_lock
     }
   }
+}
+
+static void ENC_WritePacketDataCallback(void);
+void ENC_PollTxSetup(ENC_HandleTypeDef *handle)
+{
+  if (handle->txState.queue_data)
+  {
+    if (handle->txState.stage != ENC_TX_STAGE_FREE)
+      return;
+
+    if (!lock_acquire(&spi_lock))
+      return;
+
+    handle->txState.stage = ENC_TX_STAGE_SETUP_PHY;
+
+    uint16_t len = handle->txState.queue_length;
+
+    handle->txState.current_length = len;
+    ENC_RestoreTXBuffer(handle, len);
+
+    spi_largebuf_callback = ENC_WritePacketDataCallback;
+    ENC_WriteBuffer(handle->txState.queue_data, len);
+  }
+}
+
+extern ENC_HandleTypeDef henc;
+static void ENC_WritePacketDataCallback(void)
+{
+  lock_release(&spi_lock);
+
+  // we don't need the uip_buf any more
+  lock_release(&uip_buf_lock);
+  henc.txState.stage = ENC_TX_STAGE_READY_TO_TRANSMIT;
+  henc.txState.queue_data = NULL;
+
+  // next step: ENC_Transmit
+}
+
+static void ENC_LogRxError(ENC_HandleTypeDef *handle)
+{
+  if (HAL_GetTick() - handle->rxState.rx_error_timestamp >= 10000) // TODO config value (10s)
+  {
+    handle->rxState.rx_error_timestamp = HAL_GetTick();
+  }
+
+  else if (handle->rxState.rx_timed_error_count >= 10 - 1) // TODO config value (10 errors)
+  {
+    handle->reinit_scheduled = true;
+  }
+
+  handle->rxState.rx_timed_error_count++;
+handle->reinit_scheduled = true; // XXX
+}
+
+void ENC_PollReadPacket(ENC_HandleTypeDef *handle)
+{
+  if (handle->rxState.stage == ENC_RX_STAGE_READING_STATUS_VEC_DONE)
+  {
+
+    /* Decode the new next packet pointer, and the RSV.  The
+    * RSV is encoded as:
+    *
+    *  Bits 0-15:  Indicates length of the received frame. This includes the
+    *              destination address, source address, type/length, data,
+    *              padding and CRC fields. This field is stored in little-
+    *              endian format.
+    *  Bits 16-31: Bit encoded RX status.
+    */
+
+    uint8_t *rsv = handle->rxState.buffer;
+
+    handle->nextpkt = (uint16_t)rsv[1] << 8 | (uint16_t)rsv[0];
+    uint16_t pktlen = (uint16_t)rsv[3] << 8 | (uint16_t)rsv[2];
+    uint16_t rxstat = (uint16_t)rsv[5] << 8 | (uint16_t)rsv[4];
+
+  /* Check if the packet was received OK */
+
+    if ((rxstat & RXSTAT_OK) == 0) {
+#ifdef CONFIG_ENC28J60_STATS
+        priv->stats.rxnotok++;
+#endif
+        printf("ERR: %d RX error\r\n", HAL_GetTick());
+        handle->rxState.stage = ENC_RX_STAGE_READING_DATA_DONE;
+        handle->rxState.last_packet_error_free = false;
+        ENC_LogRxError(handle);
+        // fallthrough
+    } else { /* Check for a usable packet length (4 added for the CRC) */
+        if (pktlen > (CONFIG_NET_ETH_MTU + 4) || pktlen <= (ETH_HDRLEN + 4)) {
+#ifdef CONFIG_ENC28J60_STATS
+            priv->stats.rxpktlen++;
+#endif
+            printf("ERR: %d Underlength packet\r\n", HAL_GetTick());
+            handle->rxState.stage = ENC_RX_STAGE_READING_DATA_DONE;
+            handle->rxState.last_packet_error_free = false;
+            ENC_LogRxError(handle);
+            // fallthrough
+        } else { /* Otherwise, read and process the packet */
+            /* Save the packet length (without the 4 byte CRC) in handle->RxFrameInfos.length*/
+
+            handle->rxState.length = pktlen - 4;
+
+            /* Copy the data data from the receive buffer to priv->dev.d_buf.
+            * ERDPT should be correctly positioned from the last call to to
+            * end_rdbuffer (above).
+            */
+
+            handle->rxState.stage = ENC_RX_STAGE_READING_DATA;
+            handle->rxState.last_packet_error_free = true;
+
+            spi_largebuf_callback = ENC_ReadPacketDataCallback;
+            enc_rdbuffer_async(handle->rxState.buffer, handle->rxState.length);
+
+            return;
+
+        }
+    }
+  }
+
+  if (handle->rxState.stage == ENC_RX_STAGE_READING_DATA_DONE)
+  {
+
+    /* Move the RX read pointer to the start of the next received packet.
+    * This frees the memory we just read.
+    */
+
+    uint16_t nextpkt = handle->nextpkt;
+
+    /* Errata 14 */
+    if (nextpkt == PKTMEM_RX_START) {
+        nextpkt = PKTMEM_RX_END;
+    } else {
+        nextpkt--;
+    }
+    enc_wrbreg(handle, ENC_ERXRDPTL, nextpkt & 0xff);
+    enc_wrbreg(handle, ENC_ERXRDPTH, nextpkt >> 8);
+/*
+    enc_wrbreg(handle, ENC_ERXRDPTL, (handle->nextpkt));
+    enc_wrbreg(handle, ENC_ERXRDPTH, (handle->nextpkt) >> 8);
+*/
+
+    /* Decrement the packet counter indicate we are done with this packet */
+
+    enc_bfsgreg(ENC_ECON2, ECON2_PKTDEC);
+#if 0
+    printf("end packet handling\r\n");
+#endif
+
+    lock_release(&spi_lock);
+    handle->rxState.stage = ENC_RX_STAGE_IDLE;
+
+    if (handle->rxState.last_packet_error_free)
+      uip_handle_new_packet(handle); // pass uip_buf lock
+    else
+      lock_release(&uip_buf_lock);
+  }
+}
+
+static void ENC_ReadPacketDataCallback(void)
+{
+  if (henc.rxState.stage == ENC_RX_STAGE_READING_STATUS_VEC)
+    henc.rxState.stage = ENC_RX_STAGE_READING_STATUS_VEC_DONE;
+
+  else if (henc.rxState.stage == ENC_RX_STAGE_READING_DATA)
+    henc.rxState.stage = ENC_RX_STAGE_READING_DATA_DONE;
 }
 
 /****************************************************************************
@@ -1523,9 +1735,9 @@ void ENC_HandlePendingPKTIF(ENC_HandleTypeDef *handle)
  *
  ****************************************************************************/
 
-void ENC_GetPkcnt(ENC_HandleTypeDef *handle)
+static uint8_t ENC_GetPkcnt(ENC_HandleTypeDef *handle)
 {
-    handle->pktCnt = enc_rdbreg(handle, ENC_EPKTCNT);
+    return enc_rdbreg(handle, ENC_EPKTCNT);
 }
 
 

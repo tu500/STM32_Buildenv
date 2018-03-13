@@ -1117,6 +1117,14 @@ mqtt_poll(void)
       mqtt_ping_outstanding = true;
     }
   }
+  else {
+    static uint8_t foo = 0;
+    foo++;
+    if (foo==10){
+      foo = 0;
+    /* printf("%d, %d\r\n", mqtt_timer_counter - mqtt_last_in_activity, mqtt_timer_counter - mqtt_last_out_activity); */
+    }
+  }
 
   mqtt_fire_poll_callback();
 }

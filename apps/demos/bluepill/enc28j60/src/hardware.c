@@ -1,8 +1,15 @@
 #include "stm32f1xx.h"
+#include "locking.h"
 
 #include "enc28j60.h"
+#include "hardware.h"
+
+
+lock_t spi_lock;
+spi_largebuf_callback_t spi_largebuf_callback;
 
 SPI_HandleTypeDef hspi1;
+
 
 void enc28j60_init_spi(void)
 {
@@ -121,18 +128,20 @@ void ENC_SPI_SendBuf(uint8_t *master2slave, uint8_t *slave2master, uint16_t buff
 {
   ENC_SPI_Select(true);
 
-  for (uint16_t i=0; i<bufferSize; i++)
-  {
-    uint8_t to_send = 0x00;
-
-    if (master2slave)
-      to_send = master2slave[i];
-
-    uint8_t res = ENC_SPI_SendWithoutSelection(to_send);
-
-    if (slave2master)
-      slave2master[i] = res;
-  }
+  if (!master2slave)
+    HAL_SPI_Receive(&hspi1, slave2master, bufferSize, 1000);
+  else if (!slave2master)
+    HAL_SPI_Transmit(&hspi1, master2slave, bufferSize, 1000);
+  else
+    HAL_SPI_TransmitReceive(&hspi1, master2slave, slave2master, bufferSize, 1000);
 
   ENC_SPI_Select(false);
+}
+
+// TODO
+void ENC_SPI_SendLargeBuf(uint8_t *master2slave, uint8_t *slave2master, uint16_t bufferSize)
+{
+  ENC_SPI_SendBuf(master2slave, slave2master, bufferSize);
+  if (spi_largebuf_callback)
+    spi_largebuf_callback();
 }

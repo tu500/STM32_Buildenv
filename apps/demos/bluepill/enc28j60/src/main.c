@@ -6,19 +6,22 @@
 
 #include "hardware.h"
 #include "enc28j60.h"
+#include "locking.h"
+#include "uip_interface.h"
 
 #include "mqtt.h"
 #include "autoc4.h"
+
+#include "timer.h"
+#include "ws2812b.h"
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
 
 ENC_HandleTypeDef henc;
-uint8_t MacAddress[6] = { 0xac, 0xde, 0x48, 0x23, 0x23, 0x10 };
+uint8_t MacAddress[6] = { 0xac, 0xde, 0x48, 0x23, 0x23, 0x08 };
 
-void do_nothing(void){}
-void uip_setup(void);
-void uip_loop(void);
+void ENC_PollReinit(ENC_HandleTypeDef *handle);
 
 /**
   * @brief  Main program
@@ -44,6 +47,15 @@ int main(int argc, char const *argv[])
   /* Reset PIN to switch off the LED */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 
+  ws2812b_init();
+  ws2812b_fill_dma_buffer(0, 0, 0, 0);
+  ws2812b_fill_dma_buffer(1, 0, 0, 0);
+  ws2812b_fill_dma_buffer(2, 0, 0, 0);
+  ws2812b_fill_dma_buffer(3, 0, 0, 0);
+
+  HAL_Delay(1000);
+  ws2812b_start(4);
+
   enc28j60_init_spi();
   uip_setup();
 
@@ -51,7 +63,7 @@ int main(int argc, char const *argv[])
   henc.Init.DuplexMode = ETH_MODE_HALFDUPLEX;
   henc.Init.MACAddr = &MacAddress[0];
   henc.Init.ChecksumMode = ETH_CHECKSUM_BY_HARDWARE;
-  henc.RxFrameInfos.buffer = &uip_buf[0];
+  henc.rxState.buffer = &uip_buf[0];
 
   printf("Setup\r\n");
 
@@ -65,20 +77,14 @@ int main(int argc, char const *argv[])
 
   autoc4_init();
 
-  char const * autosub[] = {
-    "topic1",
-    NULL
-  };
-  mqtt_connection_config_t mqtt_config;
-  mqtt_config.client_id = "clientid";
-  mqtt_config.user = NULL;
-  mqtt_config.pass = NULL;
-  mqtt_config.will_topic = NULL;
-  uip_ipaddr(mqtt_config.target_ip, 192,168,0,5);
-  /* uip_ipaddr(mqtt_config.target_ip, 172,23,23,110); */
-  mqtt_config.auto_subscribe_topics = autosub;
+  struct timer ws2812b_refresh_timer;
+  timer_set(&ws2812b_refresh_timer, CLOCK_SECOND * 1);
 
-  /* mqtt_set_connection_config(&mqtt_config); */
+  struct timer periodic_timer;
+  timer_set(&periodic_timer, CLOCK_SECOND/100);
+
+  struct timer reinit;
+  timer_set(&reinit, CLOCK_SECOND * 60);
 
   while(1)
   {
@@ -89,13 +95,62 @@ int main(int argc, char const *argv[])
       ENC_IRQCheckInterruptFlags(&henc);
     }
 
-    HAL_Delay(10);
-    mqtt_periodic();
-    autoc4_periodic();
+    ENC_PollReinit(&henc);
+    ENC_HandlePendingEvents(&henc);
+    ENC_PollTxSetup(&henc);
+    ENC_PollReadPacket(&henc);
+    ENC_Transmit(&henc);
+
+    if(timer_expired(&periodic_timer))
+    {
+      mqtt_periodic();
+      autoc4_periodic();
+      timer_reset(&periodic_timer);
+    }
+
+    /* if(timer_expired(&reinit)) */
+    /* { */
+    /*   henc.reinit_scheduled = true; */
+    /*   timer_reset(&reinit); */
+    /* } */
+
     uip_loop();
+
+    if(timer_expired(&ws2812b_refresh_timer))
+    {
+      ws2812b_start(4);
+      timer_reset(&ws2812b_refresh_timer);
+    }
   }
 
   return 0;
+}
+
+void ENC_PollReinit(ENC_HandleTypeDef *handle)
+{
+  if (!handle->reinit_scheduled)
+    return;
+
+  if (handle->txState.stage != ENC_TX_STAGE_FREE)
+    return;
+
+  if (!lock_acquire(&spi_lock))
+    return;
+
+  printf("Reiniting ENC\r\n");
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+
+  bool b = ENC_Start(&henc);
+  ENC_SetMacAddr(&henc);
+
+  handle->reinit_scheduled = false;
+  lock_release(&spi_lock);
+  lock_release(&uip_buf_lock);
+
+  printf("ENC Started\r\n");
+
+  if (b)
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 }
 
 /**

@@ -104,6 +104,7 @@ uint8_t ENC_SPI_Send(uint8_t command);
   */
 
 void ENC_SPI_SendBuf(uint8_t *master2slave, uint8_t *slave2master, uint16_t bufferSize);
+void ENC_SPI_SendLargeBuf(uint8_t *master2slave, uint8_t *slave2master, uint16_t bufferSize);
 
 /* Exported types ------------------------------------------------------------*/
 /** @defgroup ETH_Exported_Types ETH Exported Types
@@ -131,14 +132,49 @@ typedef struct
 /**
   * @brief  Received Frame Informations structure definition
   */
+
+enum ENC_RxStage
+{
+  ENC_RX_STAGE_IDLE,
+  ENC_RX_STAGE_READING_STATUS_VEC,
+  ENC_RX_STAGE_READING_STATUS_VEC_DONE,
+  ENC_RX_STAGE_READING_DATA,
+  ENC_RX_STAGE_READING_DATA_DONE
+};
+
 typedef struct
 {
-  uint32_t length;                       /*!< Frame length */
-
-  //uint8_t buffer[MAX_FRAMELEN+20];                       /*!< Frame buffer */
+  enum ENC_RxStage stage;
+  bool last_packet_error_free;
+  uint32_t length;
   uint8_t *buffer;
 
-} ENC_RxFrameInfos;
+  uint32_t rx_error_timestamp;
+  uint32_t rx_timed_error_count;
+} ENC_RxState;
+
+enum ENC_TxStage
+{
+  ENC_TX_STAGE_FREE,
+  //ENC_TX_STAGE_SCHEDULED, // owning a uip_buf lock
+  ENC_TX_STAGE_SETUP_PHY, // owning a uip_buf lock
+  ENC_TX_STAGE_READY_TO_TRANSMIT,
+  ENC_TX_STAGE_TRANSMITTING,
+};
+
+typedef struct
+{
+  enum ENC_TxStage stage;
+
+  // data about another possibly queued packet
+  uint8_t *queue_data;
+  uint16_t queue_length;
+
+  // data about packet currently in enc buffer memory
+  uint16_t current_length;
+  uint16_t retries;       /*!< The number of transmission retries left to do */
+  uint32_t current_transmit_starttime;
+} ENC_TxState;
 
 
 /**
@@ -151,13 +187,11 @@ typedef struct
 
   uint8_t                   bank;          /*!< Currently selected bank     */
   uint8_t                   interruptFlags;/*!< The last value of interrupts flags */
-  uint8_t                   pktCnt;         /*!< The number of pending receive packets */
+  // uint8_t                   pktCnt;         #<{(|!< The number of pending receive packets |)}>#
   uint16_t                  nextpkt;       /*!< Next packet address         */
   uint16_t                  LinkStatus;    /*!< Ethernet link status        */
-  uint16_t                  transmitLength;/*!< The length of ip frame to transmit */
   uint32_t                  startTime;     /*!< The start time of the current timer */
   uint32_t                  duration;      /*!< The duration of the current timer in ms */
-  uint16_t                  retries;       /*!< The number of transmission retries left to do */
 
   // Separate bytes for atomic operations
   bool interrupt_pending_RXERIF;
@@ -167,7 +201,10 @@ typedef struct
   //bool interrupt_pending_DMAIF; // unused
   bool interrupt_pending_PKTIF;
 
-  ENC_RxFrameInfos          RxFrameInfos;  /*!< last Rx frame infos         */
+  bool reinit_scheduled; // whether we request a reinit from the main thread
+
+  ENC_RxState rxState;
+  ENC_TxState txState;
 } ENC_HandleTypeDef;
 
  /**
@@ -748,7 +785,7 @@ void ENC_Transmit(ENC_HandleTypeDef *handle);
  *
  ****************************************************************************/
 
-bool ENC_GetReceivedFrame(ENC_HandleTypeDef *handle);
+void ENC_GetReceivedFrame(ENC_HandleTypeDef *handle);
 
 /****************************************************************************
  * Function: ENC_IRQHandler
@@ -787,24 +824,6 @@ void ENC_IRQHandler(ENC_HandleTypeDef *handle);
 
 void ENC_EnableInterrupts(uint8_t bits);
 
-/****************************************************************************
- * Function: ENC_GetPkcnt
- *
- * Description:
- *   Get the number of pending receive packets
- *
- * Parameters:
- *   handle  - Reference to the driver state structure
- *
- * Returned Value:
- *   the number of receive packet not processed yet
- *
- * Assumptions:
- *
- ****************************************************************************/
-
-void ENC_GetPkcnt(ENC_HandleTypeDef *handle);
-
 
 /****************************************************************************
  * Function: up_udelay
@@ -827,5 +846,7 @@ void ENC_IRQCheckInterruptFlags(ENC_HandleTypeDef *handle);
 void ENC_HandlePendingEvents(ENC_HandleTypeDef *handle);
 void ENC_HandlePendingLINKIF(ENC_HandleTypeDef *handle);
 void ENC_HandlePendingPKTIF(ENC_HandleTypeDef *handle);
+void ENC_PollTxSetup(ENC_HandleTypeDef *handle);
+void ENC_PollReadPacket(ENC_HandleTypeDef *handle);
 
 #endif /* ENC28J60_H_INCLUDED */

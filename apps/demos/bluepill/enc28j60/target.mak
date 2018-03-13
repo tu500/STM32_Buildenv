@@ -18,6 +18,8 @@ CCSOURCES += uip/uip.c
 CCSOURCES += mqtt.c
 CCSOURCES += autoc4.c
 
+CCSOURCES += ws2812b.c
+
 # List C++ source files here.
 CXXSOURCES =
 
