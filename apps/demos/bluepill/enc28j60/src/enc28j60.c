@@ -1591,6 +1591,7 @@ static void ENC_WritePacketDataCallback(void)
   // next step: ENC_Transmit
 }
 
+void ENC_ScheduleReinit(ENC_HandleTypeDef *handle); // TODO move to header
 static void ENC_LogRxError(ENC_HandleTypeDef *handle)
 {
   if (HAL_GetTick() - handle->rxState.rx_error_timestamp >= 10000) // TODO config value (10s)
@@ -1601,10 +1602,11 @@ static void ENC_LogRxError(ENC_HandleTypeDef *handle)
   else if (handle->rxState.rx_timed_error_count >= 10 - 1) // TODO config value (10 errors)
   {
     handle->reinit_scheduled = true;
+    ENC_ScheduleReinit(handle);
   }
 
   handle->rxState.rx_timed_error_count++;
-handle->reinit_scheduled = true; // XXX
+  ENC_ScheduleReinit(handle); // XXX schedules a reinit on every error
 }
 
 void ENC_PollReadPacket(ENC_HandleTypeDef *handle)

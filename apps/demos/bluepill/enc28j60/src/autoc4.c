@@ -401,10 +401,18 @@ autoc4_periodic(void)
   autoc4_read_inputs();
 }
 
+void ENC_ScheduleReinit_static(void);
+void
+autoc4_close_callback(void)
+{
+  // the connection got aborted, schedule a reinit of the ENC chip
+  ENC_ScheduleReinit_static();
+}
+
 static const mqtt_callback_config_t callback_config = {
     .connack_callback = autoc4_connack_callback,
     .poll_callback = autoc4_poll,
-    .close_callback = NULL,
+    .close_callback = autoc4_close_callback,
     .publish_callback = autoc4_publish_callback,
   };
 

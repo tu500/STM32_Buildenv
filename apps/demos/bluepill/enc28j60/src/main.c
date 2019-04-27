@@ -21,6 +21,8 @@ static void Error_Handler(void);
 ENC_HandleTypeDef henc;
 uint8_t MacAddress[6] = { 0xac, 0xde, 0x48, 0x23, 0x23, 0x08 };
 
+void ENC_ScheduleReinit(ENC_HandleTypeDef *handle);
+void ENC_ScheduleReinit_static(void);
 void ENC_PollReinit(ENC_HandleTypeDef *handle);
 
 /**
@@ -108,11 +110,13 @@ int main(int argc, char const *argv[])
       timer_reset(&periodic_timer);
     }
 
-    /* if(timer_expired(&reinit)) */
-    /* { */
-    /*   henc.reinit_scheduled = true; */
-    /*   timer_reset(&reinit); */
-    /* } */
+    if(timer_expired(&reinit))
+    {
+      // reinit the ENC chip every minute without an MQTT connection
+      if (!mqtt_is_connected())
+        ENC_ScheduleReinit(&henc);
+      timer_restart(&reinit);
+    }
 
     uip_loop();
 
@@ -124,6 +128,16 @@ int main(int argc, char const *argv[])
   }
 
   return 0;
+}
+
+void ENC_ScheduleReinit_static(void)
+{
+  ENC_ScheduleReinit(&henc);
+}
+
+void ENC_ScheduleReinit(ENC_HandleTypeDef *handle)
+{
+  handle->reinit_scheduled = true;
 }
 
 void ENC_PollReinit(ENC_HandleTypeDef *handle)
