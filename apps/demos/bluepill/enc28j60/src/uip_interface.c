@@ -28,7 +28,7 @@ void uip_setup(void)
   uip_init();
 
   /* uip_ipaddr(ipaddr, 192,168,0,2); */
-  uip_ipaddr(ipaddr, 172,23,23,108);
+  uip_ipaddr(ipaddr, 172,23,23,111);
   uip_sethostaddr(ipaddr);
 
   /* uip_ipaddr(ipaddr, 255,255,255,0); */

@@ -38,8 +38,8 @@ ASFLAGS = -fdata-sections -ffunction-sections
 
 # Linker flags
 LDFLAGS := -lc -Wl,--gc-sections
-LDFLAGS += -specs=rdimon.specs
-# LDFLAGS += -specs=nosys.specs
+# LDFLAGS += -specs=rdimon.specs
+LDFLAGS += -specs=nosys.specs
 LDFLAGS += -mthumb -mcpu=cortex-m3
 LDFLAGS += -Wl,-T$(ROOT)/misc/linker/f1/STM32F103XB_FLASH.ld,-Map,$(SELF_DIR)/$(TARGET).map
 

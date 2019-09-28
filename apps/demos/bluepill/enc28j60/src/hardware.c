@@ -19,7 +19,7 @@ void enc28j60_init_spi(void)
 
   // Init CS1
   HAL_GPIO_Init(GPIOA, &(GPIO_InitTypeDef){
-    .Pin  = GPIO_PIN_3,
+    .Pin  = GPIO_PIN_4,
     .Mode = GPIO_MODE_OUTPUT_PP,
     .Pull = GPIO_NOPULL,
     .Speed  = GPIO_SPEED_HIGH
@@ -38,13 +38,28 @@ void enc28j60_init_spi(void)
     .Pull = GPIO_NOPULL,
     .Speed  = GPIO_SPEED_HIGH
   });
-  // Init INT, WCL (PB7/SDA)
+  // Init WCL (PB7/SDA)
   HAL_GPIO_Init(GPIOB, &(GPIO_InitTypeDef){
-    .Pin  = GPIO_PIN_11 | GPIO_PIN_7,
+    .Pin  = GPIO_PIN_7,
     .Mode = GPIO_MODE_INPUT,
     .Pull = GPIO_NOPULL,
     .Speed  = GPIO_SPEED_HIGH
   });
+  // Init INT
+  HAL_GPIO_Init(GPIOA, &(GPIO_InitTypeDef){
+    .Pin  = GPIO_PIN_8,
+    .Mode = GPIO_MODE_INPUT,
+    .Pull = GPIO_NOPULL,
+    .Speed  = GPIO_SPEED_HIGH
+  });
+  // Init PWM1 (LED) (PB9/SDA)
+  HAL_GPIO_Init(GPIOB, &(GPIO_InitTypeDef){
+    .Pin  = GPIO_PIN_9,
+    .Mode = GPIO_MODE_OUTPUT_PP,
+    .Pull = GPIO_NOPULL,
+    .Speed  = GPIO_SPEED_HIGH
+  });
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
 
   // Start non-selected, non-resetted
   ENC_SPI_Select(false);
@@ -81,9 +96,9 @@ void enc28j60_init_spi(void)
 void ENC_SPI_Select(bool select)
 {
   if (select)
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
   else
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 }
 
 /**

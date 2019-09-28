@@ -8,9 +8,9 @@ static const autoc4_dmx_config dmxs[] = {
   /* { string_dmx_1,  1, 8 }, */
 };
 
-#define AUTOC4_CLIENT_ID "bluegate"
+#define AUTOC4_CLIENT_ID "bluegate2"
 #define AUTOC4_HEARTBEAT_TOPIC "heartbeat/" AUTOC4_CLIENT_ID
-#define AUTOC4_LOCKED_MODE_TOPIC "lock/bluegate"
+#define AUTOC4_LOCKED_MODE_TOPIC "lock/bluegate2"
 #define AUTOC4_LOGICER_HEARTBEAT_TOPIC "heartbeat/logicer"
 
 static const uint8_t will_message[]  = { 0x00 };

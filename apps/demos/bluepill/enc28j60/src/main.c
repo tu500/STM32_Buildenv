@@ -19,7 +19,7 @@ static void SystemClock_Config(void);
 static void Error_Handler(void);
 
 ENC_HandleTypeDef henc;
-uint8_t MacAddress[6] = { 0xac, 0xde, 0x48, 0x23, 0x23, 0x08 };
+uint8_t MacAddress[6] = { 0xac, 0xde, 0x48, 0x23, 0x23, 0xff };
 
 void ENC_ScheduleReinit(ENC_HandleTypeDef *handle);
 void ENC_ScheduleReinit_static(void);
@@ -92,7 +92,7 @@ int main(int argc, char const *argv[])
   {
     /* HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_11)); */
 
-    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_11) == GPIO_PIN_RESET)
+    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8) == GPIO_PIN_RESET)
     {
       ENC_IRQCheckInterruptFlags(&henc);
     }
